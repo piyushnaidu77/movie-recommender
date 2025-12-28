@@ -1,0 +1,8 @@
+.env
+.venv
+data/
+movie_embeddings.npy
+movie_factors.npy
+movie_faiss.index
+svd_model.pkl
+user_factors.npy
