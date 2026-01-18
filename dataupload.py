@@ -15,7 +15,7 @@ MYSQL_CONFIG = {
     "user": os.getenv("USER"),
     "password": os.getenv("PASSWORD"),
     "host": os.getenv("HOST"),
-    "database": os.getenv("DATABASE")
+    "database": os.getenv("DB")
 }
 
 engine = create_engine(
@@ -57,6 +57,7 @@ movies = all_movies.merge(
 movies = movies.fillna({
     "title": movies["movie_slug"],
     "year": 0.0,
+    "media_type": "movie",
     "tmdb_id": 0.0,
     "director": "Unknown",
     "runtime": 0.0,
@@ -81,6 +82,7 @@ CREATE TABLE IF NOT EXISTS movies (
     movie_id INT AUTO_INCREMENT PRIMARY KEY,
     movie_slug VARCHAR(255) UNIQUE,
     title VARCHAR(255),
+    media_type VARCHAR(25),
     year FLOAT,
     tmdb_id FLOAT,
     director TEXT,
@@ -117,12 +119,13 @@ conn.commit()
 # -----------------------------
 movie_sql = """
 INSERT INTO movies (
-    movie_slug, title, year, tmdb_id, director,
+    movie_slug, media_type, tmdb_id, title, year, director,
     runtime, studio, publisher, genre, plot, poster
 )
-VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
 ON DUPLICATE KEY UPDATE
     title=VALUES(title),
+    media_type=VALUES(media_type),
     year=VALUES(year),
     tmdb_id=VALUES(tmdb_id),
     director=VALUES(director),
