@@ -15,11 +15,20 @@ MYSQL_CONFIG = {
     "user": os.getenv("USER"),
     "password": os.getenv("PASSWORD"),
     "host": os.getenv("HOST"),
-    "database": os.getenv("DB")
+    "port": int(os.getenv("PORT", 3306)),
+    "database": os.getenv("DB"),
+    "ssl_disabled": False
 }
 
+ENGINE_URL = (
+    f"mysql+mysqlconnector://{MYSQL_CONFIG['user']}:{MYSQL_CONFIG['password']}"
+    f"@{MYSQL_CONFIG['host']}:{MYSQL_CONFIG['port']}/{MYSQL_CONFIG['database']}"
+)
+
 engine = create_engine(
-    f"mysql+mysqlconnector://{MYSQL_CONFIG['user']}:{MYSQL_CONFIG['password']}@{MYSQL_CONFIG['host']}/{MYSQL_CONFIG['database']}"
+    ENGINE_URL,
+    pool_pre_ping=True,
+    pool_recycle=3600
 )
 
 # -----------------------------
@@ -74,6 +83,8 @@ movies = movies.fillna({
 conn = mysql.connector.connect(**MYSQL_CONFIG)
 cursor = conn.cursor()
 
+print("Connection established")
+
 # -----------------------------
 # CREATE TABLES
 # -----------------------------
@@ -104,15 +115,21 @@ CREATE TABLE IF NOT EXISTS users (
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS ratings (
-    user_id INT,
-    movie_id INT,
+    user_id INT REFERENCES users(user_id),
+    movie_id INT REFERENCES movies(movie_id),
     rating FLOAT,
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE KEY uniq_rating (user_id, movie_id)
+    PRIMARY KEY (user_id, movie_id)
 )
 """)
 
 conn.commit()
+
+print("Created tables")
+
+def chunked(iterable, size=1000):
+    for i in range(0, len(iterable), size):
+        yield iterable[i:i + size]
 
 # -----------------------------
 # UPSERT MOVIES
@@ -136,16 +153,22 @@ ON DUPLICATE KEY UPDATE
     plot=VALUES(plot),
     poster=VALUES(poster)
 """
-count = 1
-for _, row in movies.iterrows():
-    cursor.execute(movie_sql, tuple(row))
-    if count%1000 == 0:
-        print(count)
-        count += 1
-    else:
-        count += 1
+
+movie_rows = movies[[
+    "movie_slug", "media_type", "tmdb_id", "title", "year",
+    "director", "runtime", "studio", "publisher", "genre",
+    "plot", "poster"
+]].values.tolist()
+
+for i, batch in enumerate(chunked(movie_rows, 1000), start=1):
+    cursor.executemany(movie_sql, batch)
+    conn.commit()
+    print(f"{i * 1000}")
+
 
 conn.commit()
+
+print("Movie data added")
 
 # -----------------------------
 # UPSERT USERS
@@ -156,10 +179,17 @@ VALUES (%s)
 ON DUPLICATE KEY UPDATE username=username
 """
 
-for username in watch["username"].dropna().unique():
-    cursor.execute(user_sql, (username,))
+user_rows = [(u,) for u in watch["username"].dropna().unique()]
+
+for i, batch in enumerate(chunked(user_rows, 1000), start=1):
+    cursor.executemany(user_sql, batch)
+    conn.commit()
+    print(f"{i * 1000}")
+
 
 conn.commit()
+
+print("User data added")
 
 # -----------------------------
 # BUILD LOOKUPS
@@ -177,25 +207,31 @@ ON DUPLICATE KEY UPDATE
     rating=VALUES(rating),
     timestamp=CURRENT_TIMESTAMP
 """
-count = 1
-for _, row in watch.iterrows():
-    user_id = users_lookup[row["username"]]
-    movie_id = movies_lookup[row["movie_slug"]]
 
-    cursor.execute(
-        rating_sql,
-        (user_id, movie_id, float(row["rating"]))
+rating_rows = [
+    (
+        users_lookup[row["username"]],
+        movies_lookup[row["movie_slug"]],
+        float(row["rating"])
     )
-    if count%1000 == 0:
-        print(count)
-        count += 1
-    else:
-        count += 1
+    for _, row in watch.iterrows()
+]
+
+print("Uploading ratings")
+
+for i, batch in enumerate(chunked(rating_rows, 10000), start=1):
+    cursor.executemany(rating_sql, batch)
+    conn.commit()
+    print(f"{i * 10000}")
+
 
 conn.commit()
+
+print("Ratings data added")
+
 conn.close()
 
-print("✅ MySQL ingestion complete")
+print("RDS ingestion complete")
 print(f"Movies: {len(movies)}")
 print(f"Users: {len(users_lookup)}")
 print(f"Ratings: {len(watch)}")
