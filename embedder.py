@@ -15,11 +15,20 @@ MYSQL_CONFIG = {
     "user": os.getenv("USER"),
     "password": os.getenv("PASSWORD"),
     "host": os.getenv("HOST"),
-    "database": os.getenv("DATABASE")
+    "port": int(os.getenv("PORT", 3306)),
+    "database": os.getenv("DB"),
+    "ssl_disabled": False
 }
 
+ENGINE_URL = (
+    f"mysql+mysqlconnector://{MYSQL_CONFIG['user']}:{MYSQL_CONFIG['password']}"
+    f"@{MYSQL_CONFIG['host']}:{MYSQL_CONFIG['port']}/{MYSQL_CONFIG['database']}"
+)
+
 engine = create_engine(
-    f"mysql+mysqlconnector://{MYSQL_CONFIG['user']}:{MYSQL_CONFIG['password']}@{MYSQL_CONFIG['host']}/{MYSQL_CONFIG['database']}"
+    ENGINE_URL,
+    pool_pre_ping=True,
+    pool_recycle=3600
 )
 
 # -----------------------------
@@ -63,18 +72,21 @@ def build_movie_document(row):
 # -----------------------------
 def main():
     # ---- Load movies from MySQL ----
+    print("Retrieving data from RDS")
     query = "SELECT movie_id, title, director, studio, publisher, genre, plot FROM movies"
     df = pd.read_sql(query, engine)
+    print("Retrieved data from RDS")
 
     # Use movie_id as index
     df.set_index("movie_id", inplace=True)
 
     # ---- Build documents ----
     docs = df.apply(build_movie_document, axis=1).tolist()
+    print("Built document for embedding")
 
     # ---- Load embedding model ----
     print("Loading sentence-transformers model...")
-    model = SentenceTransformer("all-mpnet-base-v2")
+    model = SentenceTransformer("all-mpnet-base-v2", device='cuda')
 
     # ---- Encode documents ----
     print("Generating embeddings...")

@@ -15,11 +15,20 @@ MYSQL_CONFIG = {
     "user": os.getenv("USER"),
     "password": os.getenv("PASSWORD"),
     "host": os.getenv("HOST"),
-    "database": os.getenv("DATABASE")
+    "port": int(os.getenv("PORT", 3306)),
+    "database": os.getenv("DB"),
+    "ssl_disabled": False
 }
 
+ENGINE_URL = (
+    f"mysql+mysqlconnector://{MYSQL_CONFIG['user']}:{MYSQL_CONFIG['password']}"
+    f"@{MYSQL_CONFIG['host']}:{MYSQL_CONFIG['port']}/{MYSQL_CONFIG['database']}"
+)
+
 engine = create_engine(
-    f"mysql+mysqlconnector://{MYSQL_CONFIG['user']}:{MYSQL_CONFIG['password']}@{MYSQL_CONFIG['host']}/{MYSQL_CONFIG['database']}"
+    ENGINE_URL,
+    pool_pre_ping=True,
+    pool_recycle=3600
 )
 
 # -----------------------------
@@ -33,6 +42,7 @@ SELECT
 FROM ratings r
 """
 
+print("Retrieving data from RDS")
 df = pd.read_sql(query, engine)
 
 print(f"Loaded {len(df)} ratings")
