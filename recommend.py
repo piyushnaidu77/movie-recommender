@@ -41,6 +41,8 @@ svd_model = pickle.load(open("svd_model.pkl", "rb"))
 # -----------------------------
 # LOAD DB TABLES
 # -----------------------------
+
+print("Loading data")
 movies_df = pd.read_sql("SELECT movie_id, title FROM movies", engine)
 users_df = pd.read_sql("SELECT user_id, username FROM users", engine)
 ratings_df = pd.read_sql("SELECT user_id, movie_id FROM ratings", engine)

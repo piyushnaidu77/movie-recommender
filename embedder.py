@@ -2,13 +2,13 @@ import pandas as pd
 import numpy as np
 from sentence_transformers import SentenceTransformer
 from sqlalchemy import create_engine
+import boto3
 import os
 from dotenv import load_dotenv
 
 # -----------------------------
 # CONFIG
 # -----------------------------
-
 load_dotenv()
 
 MYSQL_CONFIG = {
@@ -17,7 +17,6 @@ MYSQL_CONFIG = {
     "host": os.getenv("HOST"),
     "port": int(os.getenv("PORT", 3306)),
     "database": os.getenv("DB"),
-    "ssl_disabled": False
 }
 
 ENGINE_URL = (
@@ -25,70 +24,90 @@ ENGINE_URL = (
     f"@{MYSQL_CONFIG['host']}:{MYSQL_CONFIG['port']}/{MYSQL_CONFIG['database']}"
 )
 
-engine = create_engine(
-    ENGINE_URL,
-    pool_pre_ping=True,
-    pool_recycle=3600
-)
+engine = create_engine(ENGINE_URL, pool_pre_ping=True, pool_recycle=3600)
+
+AWS_REGION = os.getenv("AWS_REGION")
+VECTOR_BUCKET = os.getenv("S3_VECTOR_BUCKET")
+VECTOR_INDEX = os.getenv("S3_VECTOR_INDEX")
+
+s3vectors = boto3.client("s3vectors", region_name=AWS_REGION)
 
 # -----------------------------
 # BUILD MOVIE DOCUMENT
 # -----------------------------
 def build_movie_document(row):
-    """
-    Combine relevant metadata fields into a natural-language
-    document suitable for transformer embedding.
-    """
     parts = []
 
-    # Title
-    if pd.notna(row.title) and row.title.strip() != "":
-        parts.append(f"{row.title}")
+    if pd.notna(row.title) and row.title.strip():
+        parts.append(row.title)
 
-    # Director
-    if pd.notna(row.director) and row.director.strip() != "":
+    if pd.notna(row.director) and row.director.strip():
         parts.append(f"Directed by {row.director}.")
 
-    # Studios
-    if pd.notna(row.studio) and row.studio.strip() != "":
+    if pd.notna(row.studio) and row.studio.strip():
         parts.append(f"Studios: {row.studio}.")
 
-    # Publishers
-    if pd.notna(row.publisher) and row.publisher.strip() != "":
+    if pd.notna(row.publisher) and row.publisher.strip():
         parts.append(f"Published by {row.publisher}.")
 
-    # Genres
-    if pd.notna(row.genre) and row.genre.strip() != "":
+    if pd.notna(row.genre) and row.genre.strip():
         parts.append(f"Genres: {row.genre}.")
 
-    # Plot
-    if pd.notna(row["plot"]) and row["plot"].strip() != "":
+    if pd.notna(row.plot) and row["plot"].strip():
         parts.append(f"Plot: {row["plot"]}")
 
     return " ".join(parts)
 
 # -----------------------------
+# UPLOAD EMBEDDINGS
+# -----------------------------
+def upload_vectors(df, embeddings, batch_size=400):
+    records = []
+
+    for movie_id, embedding in zip(df.index, embeddings):
+        records.append({
+            "id": str(movie_id),
+            "vector": embedding.tolist(),
+            "metadata": {
+                "title": df.loc[movie_id, "title"],
+                "director": df.loc[movie_id, "director"],
+            }
+        })
+
+        if len(records) == batch_size:
+            s3vectors.put_vectors(
+                vectorBucketName=VECTOR_BUCKET,
+                indexName=VECTOR_INDEX,
+                vectors=records
+            )
+            records = []
+
+    if records:
+        s3vectors.put_vectors(
+            vectorBucketName=VECTOR_BUCKET,
+            indexName=VECTOR_INDEX,
+            vectors=records
+        )
+
+# -----------------------------
 # MAIN
 # -----------------------------
 def main():
-    # ---- Load movies from MySQL ----
-    print("Retrieving data from RDS")
-    query = "SELECT movie_id, title, director, studio, publisher, genre, plot FROM movies"
+    print("Retrieving data from RDS...")
+    query = """
+        SELECT movie_id, title, director, studio, publisher, genre, plot
+        FROM movies
+    """
     df = pd.read_sql(query, engine)
-    print("Retrieved data from RDS")
-
-    # Use movie_id as index
     df.set_index("movie_id", inplace=True)
+    print(f"Retrieved {len(df)} movies")
 
-    # ---- Build documents ----
+    print("Building documents...")
     docs = df.apply(build_movie_document, axis=1).tolist()
-    print("Built document for embedding")
 
-    # ---- Load embedding model ----
-    print("Loading sentence-transformers model...")
-    model = SentenceTransformer("all-mpnet-base-v2", device='cuda')
+    print("Loading embedding model...")
+    model = SentenceTransformer("all-mpnet-base-v2", device="cuda")
 
-    # ---- Encode documents ----
     print("Generating embeddings...")
     embeddings = model.encode(
         docs,
@@ -97,17 +116,10 @@ def main():
         show_progress_bar=True
     )
 
-    # ---- Save outputs ----
-    print("Saving embeddings...")
-    np.save("movie_embeddings.npy", embeddings)
+    print("Uploading embeddings to S3 Vectors...")
+    upload_vectors(df, embeddings)
 
-    # Save movie_id order so you can reference later
-    movie_ids = df.index.values
-    np.save("movie_ids.npy", movie_ids)
-
-    print("Done! Saved:")
-    print(" - movie_embeddings.npy")
-    print(" - movie_ids.npy")
+    print("Done! Vectors stored in S3 Vectors index.")
 
 # -----------------------------
 if __name__ == "__main__":
